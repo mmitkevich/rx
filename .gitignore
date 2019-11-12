@@ -50,3 +50,4 @@ Temporary Items
 *.lib
 *.exe
 *.lst
+*.a

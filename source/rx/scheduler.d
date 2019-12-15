@@ -56,7 +56,7 @@ unittest
 interface Scheduler
 {
     ///
-    Disposable schedule(void delegate() op, Duration val);
+    Disposable schedule(void delegate() op, Duration delay, Duration interval=Duration.zero);
 }
 
 ///
@@ -64,11 +64,13 @@ class ImmediateScheduler : Scheduler
 {
 public:
     ///
-    Disposable schedule(void delegate() op, Duration dueTime)
+    Disposable schedule(void delegate() op, Duration delay, Duration interval=Duration.zero)
     {
-        if (dueTime > Duration.zero)
-            Thread.sleep(dueTime);
+        assert(interval==Duration.zero, "ImmediateScheduler only supports interval=Duration.zero");
+        if (delay > Duration.zero)
+            Thread.sleep(delay);
         op();
+
         return NopDisposable.instance;
     }
 }
@@ -77,9 +79,9 @@ public:
 class ThreadScheduler : Scheduler
 {
     ///
-    Disposable schedule(void delegate() op, Duration val)
+    Disposable schedule(void delegate() op, Duration delay, Duration interval=Duration.zero)
     {
-        auto target = MonoTime.currTime + val;
+        auto target = MonoTime.currTime + delay;
         auto c = new CancellationToken;
         auto t = new Thread({
             if (c.isCanceled)
@@ -89,6 +91,12 @@ class ThreadScheduler : Scheduler
                 Thread.sleep(dt);
             if (!c.isCanceled)
                 op();
+            if(interval>=Duration.zero) {
+                while(!c.isCanceled) {
+                    Thread.sleep(interval);
+                    op();
+                }
+            }
         });
         t.start();
         return c;
@@ -130,9 +138,9 @@ public:
 
 public:
     ///
-    Disposable schedule(void delegate() op, Duration val)
+    Disposable schedule(void delegate() op, Duration delay, Duration interval=Duration.zero)
     {
-        auto target = MonoTime.currTime + val;
+        auto target = MonoTime.currTime + delay;
         auto c = new CancellationToken;
         _pool.put(task({
                 if (c.isCanceled)
@@ -142,6 +150,12 @@ public:
                     Thread.sleep(dt);
                 if (!c.isCanceled)
                     op();
+                if(interval>Duration.zero) {
+                    while(!c.isCanceled) {
+                        Thread.sleep(dt);
+                        op();
+                    }
+                }
             }));
         return c;
     }
@@ -955,9 +969,9 @@ unittest
     queue.enqueue(ScheduleItem(2.seconds, null));
 
     auto item0 = queue.dequeue();
-    assert(item0.dueTime == 1.seconds);
+    assert(item0.delay == 1.seconds);
     auto item1 = queue.dequeue();
-    assert(item1.dueTime == 2.seconds);
+    assert(item1.delay == 2.seconds);
 }
 
 ///
@@ -981,9 +995,9 @@ class CurrentThreadScheduler : Scheduler
     }
 
     ///
-    Disposable schedule(void delegate() op, Duration dueTime)
+    Disposable schedule(void delegate() op, Duration delay, Duration interval=Duration.zero)
     {
-        auto item = ScheduleItem(time() + dueTime, op);
+        auto item = ScheduleItem(time() + delay, op);
 
         if (currentThreadQueue is null)
         {
@@ -998,13 +1012,13 @@ class CurrentThreadScheduler : Scheduler
                 auto work = currentThreadQueue.dequeue();
                 auto dt = work.dueTime - time();
 
-                if (dt > Duration.zero)
-                {
+                if (dt > Duration.zero) {
                     Thread.sleep(dt);
                 }
 
                 if (!work.isCanceled)
                     work.action();
+                // FIXME(mmitkevich): reschedule if interval provided?
             }
         }
         else
